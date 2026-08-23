@@ -1,0 +1,76 @@
+# =============================================================================
+# Docker Compose - Digital Certificates SSL/TLS
+# =============================================================================
+# Orquesta dos contenedores para la aplicacion:
+#   1. fastapi: Backend Python con FastAPI
+#   2. nginx:  Reverse proxy con TLS termination
+#
+# Arquitectura:
+#   Navegador → :443 (Nginx TLS) → :8000 (FastAPI HTTP)
+#
+# Uso:
+#   ./scripts/generate-certs.sh   # Generar certificados primero
+#   docker compose up --build -d  # Levantar servicios
+#   docker compose down           # Detener servicios
+# =============================================================================
+
+services:
+  # =========================================================================
+  # FastAPI - Backend Application
+  # =========================================================================
+  # Aplicacion Python que expone la API REST.
+  # No tiene acceso directo desde el host (solo via Nginx).
+  fastapi:
+    build:
+      context: .
+      dockerfile: docker/fastapi/Dockerfile
+    container_name: fastapi-app
+    networks:
+      - backend-net
+    expose:
+      - "8000"
+    volumes:
+      - ./certs:/app/certs:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # =========================================================================
+  # Nginx - Reverse Proxy + TLS
+  # =========================================================================
+  # Punto de entrada HTTPS. Descifra TLS y reenvia a FastAPI.
+  # Expone el puerto 443 al host.
+  nginx:
+    build:
+      context: ./docker/nginx
+      dockerfile: Dockerfile
+    container_name: nginx-proxy
+    ports:
+      - "443:443"
+    depends_on:
+      fastapi:
+        condition: service_healthy
+    networks:
+      - backend-net
+    volumes:
+      - ./certs:/etc/nginx/certs:ro
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "https://localhost/nginx-health", "--no-check-certificate"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+# =============================================================================
+# Networks
+# =============================================================================
+# Red interna que aísla FastAPI del mundo exterior.
+# Solo Nginx puede acceder a FastAPI a traves de esta red.
+networks:
+  backend-net:
+    driver: bridge
